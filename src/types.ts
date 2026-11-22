@@ -23,8 +23,10 @@ export interface JellyfinUser {
 export interface JellyfinItem {
   Id: string;
   Name: string;
-  Type: 'Series' | 'Movie' | string;
+  Type: 'Series' | 'Season' | 'Episode' | 'Movie' | string;
   ProductionYear?: number;
+  SeriesId?: string;
+  SeriesName?: string;
   ProviderIds?: Record<string, string | undefined>;
 }
 

@@ -5,7 +5,7 @@ A lightweight Node.js / TypeScript middleware transformer that intercepts and ag
 ## Features
 
 - **Drop-in Discord Webhook Middleware**: Works as a transparent proxy for Sonarr/Radarr's built-in **Discord** connector (preserving all embeds, fields, and formatting), and also supports raw Sonarr/Radarr **Webhook** payloads by converting them into Discord embeds automatically.
-- **Jellyfin Favourites Monitoring**: Periodically polls Jellyfin's `/Users` and `/Users/{userId}/Items?Filters=IsFavorite` endpoints using your API key, indexing favourite shows and movies by TVDB, TMDb, IMDb IDs, and normalized title fallback.
+- **Jellyfin Favourites Monitoring**: Periodically polls Jellyfin's `/Users` and `/Users/{userId}/Items?Filters=IsFavorite` endpoints using your API key, indexing favourite shows and movies (including resolving favourited individual episodes or seasons back to their parent series) by TVDB, TMDb, IMDb IDs, and normalized title fallback.
 - **Seerr → Discord User Mapping**: Queries Seerr's `/api/v1/user` and `/api/v1/user/{id}/settings/notifications` endpoints to map each Jellyfin user to their linked Discord user ID(s) (`discordId` / `discordIds`).
 - **Burst Aggregation**: Batches rapid flurries of incoming episode webhooks over a short configurable window (`AGGREGATION_WINDOW_SECONDS`, default `10s`) into combined Discord messages (automatically chunked at Discord's 10-embed limit).
 - **1-Hour Ping Debounce**: Tracks `(media, discordUserId)` over a configurable 1-hour window (`PING_DEBOUNCE_SECONDS=3600`) so bulk episode imports won't repeatedly ping the same user for the same show—while still forwarding the embeds cleanly to Discord.

@@ -76,7 +76,7 @@ export class JellyfinClient {
     const params = new URLSearchParams({
       Filters: 'IsFavorite',
       Recursive: 'true',
-      IncludeItemTypes: 'Series,Movie',
+      IncludeItemTypes: 'Series,Season,Episode,Movie',
       Fields: 'ProviderIds',
     });
 
@@ -94,13 +94,82 @@ export class JellyfinClient {
 
     const data = (await res.json()) as JellyfinItemsResponse;
     const items = Array.isArray(data.Items) ? data.Items : [];
-    const favourites: TrackedFavourite[] = [];
+    const favouritesById = new Map<string, TrackedFavourite>();
+    const missingSeriesNames = new Map<string, string>();
 
     for (const item of items) {
-      const mapped = mapItemToFavourite(item);
-      if (mapped) favourites.push(mapped);
+      const typeLower = item.Type?.toLowerCase();
+      if (typeLower === 'series' || typeLower === 'movie') {
+        const mapped = mapItemToFavourite(item);
+        if (mapped) {
+          favouritesById.set(mapped.jellyfinItemId, mapped);
+        }
+      } else if ((typeLower === 'episode' || typeLower === 'season') && item.SeriesId) {
+        if (!favouritesById.has(item.SeriesId) && !missingSeriesNames.has(item.SeriesId)) {
+          missingSeriesNames.set(item.SeriesId, item.SeriesName ?? '');
+        }
+      }
     }
 
-    return favourites;
+    // Remove any SeriesIds that were also directly favourited later in the list
+    for (const id of favouritesById.keys()) {
+      missingSeriesNames.delete(id);
+    }
+
+    if (missingSeriesNames.size > 0) {
+      const parentSeries = await this.getItemsByIds(userId, [...missingSeriesNames.keys()]);
+      for (const seriesItem of parentSeries) {
+        const mapped = mapItemToFavourite(seriesItem);
+        if (mapped) {
+          favouritesById.set(mapped.jellyfinItemId, mapped);
+          missingSeriesNames.delete(mapped.jellyfinItemId);
+        }
+      }
+
+      // Fallback to SeriesName if Jellyfin didn't return a parent Series item
+      for (const [seriesId, seriesName] of missingSeriesNames.entries()) {
+        if (seriesName.trim()) {
+          favouritesById.set(seriesId, {
+            jellyfinItemId: seriesId,
+            name: seriesName.trim(),
+            mediaType: 'series',
+            providerIds: {},
+          });
+        }
+      }
+    }
+
+    return [...favouritesById.values()];
+  }
+
+  private async getItemsByIds(userId: string, itemIds: string[]): Promise<JellyfinItem[]> {
+    const results: JellyfinItem[] = [];
+    const batchSize = 100;
+
+    for (let i = 0; i < itemIds.length; i += batchSize) {
+      const batch = itemIds.slice(i, i + batchSize);
+      const params = new URLSearchParams({
+        Ids: batch.join(','),
+        Fields: 'ProviderIds',
+      });
+      const url = `${this.baseUrl}/Users/${encodeURIComponent(userId)}/Items?${params.toString()}`;
+      const res = await this.fetchImpl(url, {
+        method: 'GET',
+        headers: this.headers,
+      });
+
+      if (!res.ok) {
+        throw new Error(
+          `Jellyfin GET /Users/${userId}/Items?Ids=... failed: ${res.status} ${res.statusText}`,
+        );
+      }
+
+      const data = (await res.json()) as JellyfinItemsResponse;
+      if (Array.isArray(data.Items)) {
+        results.push(...data.Items);
+      }
+    }
+
+    return results;
   }
 }

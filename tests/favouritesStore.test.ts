@@ -135,4 +135,78 @@ describe('FavouritesStore', () => {
       }),
     ).toEqual([]);
   });
+
+  it('resolves parent series when a user only favourites a single episode or season', async () => {
+    const mockFetch = createMockFetch({
+      '/Users/user-ep-only/Items?Ids=series-severance': {
+        Items: [
+          {
+            Id: 'series-severance',
+            Name: 'Severance',
+            Type: 'Series',
+            ProductionYear: 2022,
+            ProviderIds: { Tvdb: '371980', Tmdb: '95396', Imdb: 'tt11280740' },
+          },
+        ],
+      },
+      '/Users/user-ep-only/Items?Filters=IsFavorite': {
+        Items: [
+          {
+            Id: 'ep-s01e01',
+            Name: 'Good News About Hell',
+            Type: 'Episode',
+            SeriesId: 'series-severance',
+            SeriesName: 'Severance',
+            ProviderIds: { Tvdb: '9000001' }, // Episode TVDB ID, not Series TVDB ID
+          },
+          {
+            Id: 'ep-s01e02',
+            Name: 'Half Loop',
+            Type: 'Episode',
+            SeriesId: 'series-severance',
+            SeriesName: 'Severance',
+          },
+        ],
+      },
+      '/Users': [{ Id: 'user-ep-only', Name: 'Charlie' }],
+      '/api/v1/user/30/settings/notifications': {
+        discordId: '300000000000000003',
+      },
+      '/api/v1/user?': {
+        pageInfo: { pages: 1, pageSize: 100, results: 1, page: 1 },
+        results: [
+          {
+            id: 30,
+            username: 'charlie',
+            jellyfinUserId: 'user-ep-only',
+          },
+        ],
+      },
+    });
+
+    const jellyfin = new JellyfinClient({
+      baseUrl: 'http://jellyfin.local:8096',
+      apiKey: 'jf-key',
+      fetchImpl: mockFetch,
+    });
+    const seerr = new SeerrClient({
+      baseUrl: 'http://seerr.local:5055',
+      apiKey: 'seerr-key',
+      fetchImpl: mockFetch,
+    });
+
+    const store = new FavouritesStore({ jellyfin, seerr });
+    const status = await store.sync();
+
+    // Multiple favourited episodes of the same show deduplicate to 1 tracked series
+    expect(status.totalFavouritesTracked).toBe(1);
+
+    // Matches parent show by Series TVDB ID even though user only favourited episodes
+    expect(
+      store.findDiscordUsersForMedia({
+        mediaType: 'series',
+        providerIds: { tvdb: '371980' },
+      }),
+    ).toEqual(['300000000000000003']);
+  });
 });

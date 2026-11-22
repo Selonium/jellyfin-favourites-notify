@@ -1,0 +1,9 @@
+services:
+  jellyfin-favourites-notify:
+    build: .
+    container_name: jellyfin-favourites-notify
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env

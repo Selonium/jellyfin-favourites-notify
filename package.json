@@ -1,0 +1,32 @@
+{
+  "name": "jellyfin-favourites-notify",
+  "version": "1.0.0",
+  "description": "Middleware transformer that aggregates Sonarr and Radarr webhooks targeted at Discord and injects mentions for Jellyfin users who favourited the media via Seerr.",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "jellyfin",
+    "sonarr",
+    "radarr",
+    "seerr",
+    "jellyseerr",
+    "discord",
+    "webhook",
+    "middleware"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
+  }
+}

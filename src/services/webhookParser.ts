@@ -2,12 +2,19 @@ import type {
   ArrSource,
   DiscordEmbed,
   DiscordWebhookPayload,
+  EpisodeRef,
   MediaEventCategory,
   MediaType,
   ParsedMediaUpdate,
   ProviderIds,
 } from '../types.js';
 import { normalizeTitle } from './favouritesStore.js';
+
+interface RawArrImage {
+  coverType?: string;
+  remoteUrl?: string;
+  url?: string;
+}
 
 interface RawSonarrRadarrPayload {
   eventType?: string;
@@ -18,6 +25,7 @@ interface RawSonarrRadarrPayload {
     tvdbId?: number | string;
     tmdbId?: number | string;
     imdbId?: string;
+    images?: RawArrImage[];
   };
   episodes?: Array<{
     seasonNumber?: number;
@@ -35,6 +43,7 @@ interface RawSonarrRadarrPayload {
     tmdbId?: number | string;
     imdbId?: string;
     overview?: string;
+    images?: RawArrImage[];
   };
   movieFile?: {
     quality?: string;
@@ -116,7 +125,6 @@ function detectSourceFromDiscordPayload(
   if (hasTvdb || tmdbMediaType === 'series') return 'sonarr';
   if (tmdbMediaType === 'movie') return 'radarr';
 
-  // Check episode patterns like "1x01" or "S01E01" in embed titles
   const titles = (payload.embeds ?? []).map((e) => e.title ?? '').join(' ');
   if (/\b(?:\d+x\d+|S\d{1,2}E\d{1,3})\b/i.test(titles)) {
     return 'sonarr';
@@ -159,10 +167,64 @@ function classifyDiscordEvent(payload: DiscordWebhookPayload): MediaEventCategor
     return 'added';
   }
 
-  // Sonarr/Radarr Discord import embeds often omit the word "Imported" and just have
-  // title "Show Name - 1x01 - Ep Title" or "Movie Name (2024)" with Quality/Links fields.
   const hasEmbed = (payload.embeds?.length ?? 0) > 0;
   return hasEmbed ? 'added' : 'other';
+}
+
+export function extractEpisodesFromText(text: string): EpisodeRef[] {
+  const episodes: EpisodeRef[] = [];
+  const seen = new Set<string>();
+
+  const pushEpisode = (season: number, episode: number) => {
+    const key = `${season}:${episode}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      episodes.push({ season, episode });
+    }
+  };
+
+  // Match S01E01-E03, S01E01-S01E03, S01E01-03, S01E01
+  const sePattern = /\bS(\d{1,2})E(\d{1,3})(?:\s*[-–—]\s*(?:S(\d{1,2}))?E?(\d{1,3}))?\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = sePattern.exec(text)) !== null) {
+    const startSeason = Number.parseInt(match[1], 10);
+    const startEp = Number.parseInt(match[2], 10);
+    const endSeason = match[3] ? Number.parseInt(match[3], 10) : startSeason;
+    const endEp = match[4] ? Number.parseInt(match[4], 10) : startEp;
+
+    if (endSeason === startSeason && endEp >= startEp && endEp - startEp <= 200) {
+      for (let ep = startEp; ep <= endEp; ep++) {
+        pushEpisode(startSeason, ep);
+      }
+    } else {
+      pushEpisode(startSeason, startEp);
+      pushEpisode(endSeason, endEp);
+    }
+  }
+
+  if (episodes.length > 0) {
+    return episodes;
+  }
+
+  // Match 1x01-03, 1x01-1x03, 1x01
+  const xPattern = /\b(\d{1,2})x(\d{1,3})(?:\s*[-–—]\s*(?:(\d{1,2})x)?(\d{1,3}))?\b/gi;
+  while ((match = xPattern.exec(text)) !== null) {
+    const startSeason = Number.parseInt(match[1], 10);
+    const startEp = Number.parseInt(match[2], 10);
+    const endSeason = match[3] ? Number.parseInt(match[3], 10) : startSeason;
+    const endEp = match[4] ? Number.parseInt(match[4], 10) : startEp;
+
+    if (endSeason === startSeason && endEp >= startEp && endEp - startEp <= 200) {
+      for (let ep = startEp; ep <= endEp; ep++) {
+        pushEpisode(startSeason, ep);
+      }
+    } else {
+      pushEpisode(startSeason, startEp);
+      pushEpisode(endSeason, endEp);
+    }
+  }
+
+  return episodes;
 }
 
 function extractTitleFromEmbed(
@@ -174,18 +236,15 @@ function extractTitleFromEmbed(
 
   let cleaned = rawTitle;
 
-  // Strip common event suffixes like " - Imported", " - Upgraded", " - Deleted", " - Grabbed"
   cleaned = cleaned.replace(
     /\s*[-–—]\s*(?:episode\s+)?(?:imported|downloaded|upgraded|deleted|grabbed|added)\s*$/i,
     '',
   );
 
-  // Strip Sonarr episode suffix: "Show Name - 1x02 - Ep Title" or "Show Name - S01E02..."
   if (mediaType !== 'movie') {
     cleaned = cleaned.replace(/\s*[-–—]\s*(?:\d+x\d+|S\d{1,2}E\d{1,3}).*$/i, '');
   }
 
-  // Extract optional trailing "(YYYY)" year
   let year: number | undefined;
   const yearMatch = cleaned.match(/\s*\((\d{4})\)\s*$/);
   if (yearMatch?.[1]) {
@@ -194,6 +253,23 @@ function extractTitleFromEmbed(
   }
 
   return { title: cleaned || undefined, year };
+}
+
+function extractImageFromRawImages(images?: RawArrImage[]): string | undefined {
+  if (!Array.isArray(images) || images.length === 0) return undefined;
+  const poster = images.find(
+    (img) => img.coverType?.toLowerCase() === 'poster' && (img.remoteUrl || img.url),
+  );
+  const candidate = poster ?? images.find((img) => img.remoteUrl || img.url);
+  return candidate?.remoteUrl || candidate?.url || undefined;
+}
+
+function extractImageFromEmbeds(embeds?: DiscordEmbed[]): string | undefined {
+  for (const embed of embeds ?? []) {
+    const url = embed.thumbnail?.url || embed.image?.url;
+    if (url) return url;
+  }
+  return undefined;
 }
 
 export function buildMediaKey(
@@ -211,7 +287,9 @@ export function buildMediaKey(
   return undefined;
 }
 
-function isRawArrPayload(body: Record<string, unknown>): body is RawSonarrRadarrPayload & Record<string, unknown> {
+function isRawArrPayload(
+  body: Record<string, unknown>,
+): body is RawSonarrRadarrPayload & Record<string, unknown> {
   return (
     typeof body.eventType === 'string' &&
     !Array.isArray(body.embeds) &&
@@ -238,132 +316,115 @@ function classifyRawArrEvent(payload: RawSonarrRadarrPayload): MediaEventCategor
   return 'other';
 }
 
-function formatEpisodeCode(season?: number, episode?: number): string {
-  const s = String(season ?? 0).padStart(2, '0');
-  const e = String(episode ?? 0).padStart(2, '0');
+export function formatEpisodeCode(season: number, episode: number): string {
+  const s = String(season).padStart(2, '0');
+  const e = String(episode).padStart(2, '0');
   return `S${s}E${e}`;
 }
 
-function buildEmbedForRawArrPayload(
-  payload: RawSonarrRadarrPayload,
-  source: ArrSource,
-  category: MediaEventCategory,
-): DiscordWebhookPayload {
-  const colors: Record<MediaEventCategory, number> = {
-    added: 0x2ecc71,
-    upgraded: 0x3498db,
-    deleted: 0xe74c3c,
-    grab: 0xf1c40f,
-    other: 0x95a5a6,
-  };
+export function formatEpisodeRange(episodes: EpisodeRef[]): string | undefined {
+  if (episodes.length === 0) return undefined;
 
-  const actionLabels: Record<MediaEventCategory, string> = {
-    added: 'Imported',
-    upgraded: 'Upgraded',
-    deleted: 'Deleted',
-    grab: 'Grabbed',
-    other: payload.eventType ?? 'Notification',
-  };
-
-  if (payload.series) {
-    const seriesTitle = payload.series.title ?? 'Unknown Series';
-    const episodes = payload.episodes ?? [];
-    let title = seriesTitle;
-    if (episodes.length === 1) {
-      const ep = episodes[0];
-      title = `${seriesTitle} - ${formatEpisodeCode(ep.seasonNumber, ep.episodeNumber)}${ep.title ? ` - ${ep.title}` : ''}`;
-    } else if (episodes.length > 1) {
-      const first = episodes[0];
-      const last = episodes[episodes.length - 1];
-      title = `${seriesTitle} - ${formatEpisodeCode(first.seasonNumber, first.episodeNumber)}-${formatEpisodeCode(last.seasonNumber, last.episodeNumber)} (${episodes.length} episodes)`;
-    }
-
-    const fields: Array<{ name: string; value: string; inline?: boolean }> = [];
-    const quality = payload.episodeFile?.quality ?? payload.release?.quality;
-    if (quality) {
-      fields.push({ name: 'Quality', value: quality, inline: true });
-    }
-    if (payload.deleteReason) {
-      fields.push({ name: 'Reason', value: payload.deleteReason, inline: true });
-    }
-
-    const links: string[] = [];
-    if (payload.series.tvdbId) {
-      links.push(`[TheTVDB](https://thetvdb.com/dereferer/series/${payload.series.tvdbId})`);
-    }
-    if (payload.series.imdbId) {
-      links.push(`[IMDb](https://www.imdb.com/title/${payload.series.imdbId})`);
-    }
-    if (payload.series.tmdbId) {
-      links.push(`[TMDb](https://www.themoviedb.org/tv/${payload.series.tmdbId})`);
-    }
-    if (links.length > 0) {
-      fields.push({ name: 'Links', value: links.join(' / '), inline: false });
-    }
-
-    return {
-      username: source === 'radarr' ? 'Radarr' : 'Sonarr',
-      embeds: [
-        {
-          author: { name: 'Sonarr' },
-          title,
-          description: `Episode ${actionLabels[category]}`,
-          color: colors[category],
-          fields: fields.length > 0 ? fields : undefined,
-          timestamp: new Date().toISOString(),
-        },
-      ],
-    };
+  const unique = new Map<string, EpisodeRef>();
+  for (const ep of episodes) {
+    unique.set(`${ep.season}:${ep.episode}`, ep);
   }
 
-  if (payload.movie) {
-    const movieTitle = payload.movie.title ?? 'Unknown Movie';
-    const title = payload.movie.year ? `${movieTitle} (${payload.movie.year})` : movieTitle;
-    const fields: Array<{ name: string; value: string; inline?: boolean }> = [];
-    const quality = payload.movieFile?.quality ?? payload.release?.quality;
-    if (quality) {
-      fields.push({ name: 'Quality', value: quality, inline: true });
-    }
-    if (payload.deleteReason) {
-      fields.push({ name: 'Reason', value: payload.deleteReason, inline: true });
-    }
+  const sorted = [...unique.values()].sort((a, b) =>
+    a.season !== b.season ? a.season - b.season : a.episode - b.episode,
+  );
 
-    const links: string[] = [];
-    if (payload.movie.tmdbId) {
-      links.push(`[TMDb](https://www.themoviedb.org/movie/${payload.movie.tmdbId})`);
-    }
-    if (payload.movie.imdbId) {
-      links.push(`[IMDb](https://www.imdb.com/title/${payload.movie.imdbId})`);
-    }
-    if (links.length > 0) {
-      fields.push({ name: 'Links', value: links.join(' / '), inline: false });
-    }
+  const ranges: string[] = [];
+  let runStart = sorted[0];
+  let runEnd = sorted[0];
 
-    return {
-      username: 'Radarr',
-      embeds: [
-        {
-          author: { name: 'Radarr' },
-          title,
-          description: `Movie ${actionLabels[category]}`,
-          color: colors[category],
-          fields: fields.length > 0 ? fields : undefined,
-          timestamp: new Date().toISOString(),
-        },
-      ],
-    };
+  const flushRun = () => {
+    if (runStart.season === runEnd.season && runStart.episode === runEnd.episode) {
+      ranges.push(formatEpisodeCode(runStart.season, runStart.episode));
+    } else {
+      ranges.push(
+        `${formatEpisodeCode(runStart.season, runStart.episode)}–${formatEpisodeCode(runEnd.season, runEnd.episode)}`,
+      );
+    }
+  };
+
+  for (let i = 1; i < sorted.length; i++) {
+    const current = sorted[i];
+    if (current.season === runEnd.season && current.episode === runEnd.episode + 1) {
+      runEnd = current;
+    } else {
+      flushRun();
+      runStart = current;
+      runEnd = current;
+    }
+  }
+  flushRun();
+
+  return ranges.join(', ');
+}
+
+const EVENT_COLORS: Record<MediaEventCategory, number> = {
+  added: 0x2ecc71,
+  upgraded: 0x3498db,
+  deleted: 0xe74c3c,
+  grab: 0xf1c40f,
+  other: 0x95a5a6,
+};
+
+const EVENT_LABELS: Record<MediaEventCategory, string> = {
+  added: 'Added',
+  upgraded: 'Upgraded',
+  deleted: 'Deleted',
+  grab: 'Grabbed',
+  other: 'Updated',
+};
+
+export function buildSeerrStyleEmbed(params: {
+  title: string;
+  year?: number;
+  mediaType: MediaType;
+  eventCategory: MediaEventCategory;
+  episodes: EpisodeRef[];
+  imageUrl?: string;
+  url?: string;
+  timestamp?: string;
+}): DiscordEmbed {
+  const displayTitle = params.year ? `${params.title} (${params.year})` : params.title;
+  const actionLabel = EVENT_LABELS[params.eventCategory];
+  const episodeRange = formatEpisodeRange(params.episodes);
+
+  const fields: Array<{ name: string; value: string; inline?: boolean }> = [
+    {
+      name: 'Modification',
+      value: actionLabel,
+      inline: true,
+    },
+  ];
+
+  if (episodeRange) {
+    fields.push({
+      name: params.episodes.length === 1 ? 'Episode' : 'Episodes',
+      value: episodeRange,
+      inline: true,
+    });
   }
 
-  return {
-    username: source === 'radarr' ? 'Radarr' : source === 'sonarr' ? 'Sonarr' : 'Arr Notify',
-    embeds: [
-      {
-        title: payload.eventType ?? 'Notification',
-        color: colors[category],
-        timestamp: new Date().toISOString(),
-      },
-    ],
+  const embed: DiscordEmbed = {
+    title: displayTitle,
+    color: EVENT_COLORS[params.eventCategory],
+    fields,
+    timestamp: params.timestamp ?? new Date().toISOString(),
   };
+
+  if (params.url) {
+    embed.url = params.url;
+  }
+
+  if (params.imageUrl) {
+    embed.thumbnail = { url: params.imageUrl };
+  }
+
+  return embed;
 }
 
 export function parseIncomingWebhook(
@@ -382,27 +443,57 @@ export function parseIncomingWebhook(
     let source: ArrSource = sourceHint;
     let title: string | undefined;
     let year: number | undefined;
+    let imageUrl: string | undefined;
+    const episodes: EpisodeRef[] = [];
 
     if (record.series) {
       mediaType = 'series';
       source = 'sonarr';
       title = record.series.title;
       year = record.series.year;
+      imageUrl = extractImageFromRawImages(record.series.images);
       if (record.series.tvdbId != null) providerIds.tvdb = String(record.series.tvdbId);
       if (record.series.tmdbId != null) providerIds.tmdb = String(record.series.tmdbId);
       if (record.series.imdbId) providerIds.imdb = record.series.imdbId.toLowerCase();
+
+      for (const ep of record.episodes ?? []) {
+        if (typeof ep.seasonNumber === 'number' && typeof ep.episodeNumber === 'number') {
+          episodes.push({
+            season: ep.seasonNumber,
+            episode: ep.episodeNumber,
+            title: ep.title,
+          });
+        }
+      }
     } else if (record.movie) {
       mediaType = 'movie';
       source = 'radarr';
       title = record.movie.title;
       year = record.movie.year;
+      imageUrl = extractImageFromRawImages(record.movie.images);
       if (record.movie.tmdbId != null) providerIds.tmdb = String(record.movie.tmdbId);
       if (record.movie.imdbId) providerIds.imdb = record.movie.imdbId.toLowerCase();
     }
 
     const eventCategory = classifyRawArrEvent(record);
-    const discordPayload = buildEmbedForRawArrPayload(record, source, eventCategory);
     const mediaKey = buildMediaKey(mediaType, providerIds, title);
+    const username = source === 'radarr' ? 'Radarr' : source === 'sonarr' ? 'Sonarr' : 'Arr Notify';
+
+    const embed =
+      eventCategory !== 'other' && title
+        ? buildSeerrStyleEmbed({
+            title,
+            year,
+            mediaType,
+            eventCategory,
+            episodes,
+            imageUrl,
+          })
+        : {
+            title: record.eventType ?? 'Notification',
+            color: EVENT_COLORS[eventCategory],
+            timestamp: new Date().toISOString(),
+          };
 
     return {
       source,
@@ -410,9 +501,14 @@ export function parseIncomingWebhook(
       eventCategory,
       title,
       year,
+      episodes,
+      imageUrl,
       providerIds,
       mediaKey,
-      discordPayload,
+      discordPayload: {
+        username,
+        embeds: [embed],
+      },
     };
   }
 
@@ -432,7 +528,14 @@ export function parseIncomingWebhook(
     tmdbMediaType ?? (source === 'sonarr' ? 'series' : source === 'radarr' ? 'movie' : 'unknown');
 
   const eventCategory = classifyDiscordEvent(discordPayload);
-  const { title, year } = extractTitleFromEmbed(discordPayload.embeds?.[0], mediaType);
+  const firstEmbed = discordPayload.embeds?.[0];
+  const { title, year } = extractTitleFromEmbed(firstEmbed, mediaType);
+  const imageUrl = extractImageFromEmbeds(discordPayload.embeds);
+  const url = firstEmbed?.url;
+  const episodes =
+    mediaType !== 'movie'
+      ? (discordPayload.embeds ?? []).flatMap((e) => extractEpisodesFromText(e.title ?? ''))
+      : [];
   const mediaKey = buildMediaKey(mediaType, providerIds, title);
 
   return {
@@ -441,6 +544,9 @@ export function parseIncomingWebhook(
     eventCategory,
     title,
     year,
+    episodes,
+    imageUrl,
+    url,
     providerIds,
     mediaKey,
     discordPayload: {

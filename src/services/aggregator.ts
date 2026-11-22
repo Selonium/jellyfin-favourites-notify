@@ -3,11 +3,14 @@ import type { Logger } from '../logger.js';
 import type {
   DiscordEmbed,
   DiscordWebhookPayload,
+  EpisodeRef,
   MediaEventCategory,
+  MediaType,
   ParsedMediaUpdate,
 } from '../types.js';
 import type { PingDebouncer } from './debounce.js';
 import type { FavouritesStore } from './favouritesStore.js';
+import { buildSeerrStyleEmbed } from './webhookParser.js';
 
 const DISCORD_MAX_CONTENT_LENGTH = 2000;
 
@@ -21,12 +24,23 @@ export interface WebhookAggregatorOptions {
   logger?: Logger;
 }
 
+interface MediaEmbedGroup {
+  title: string;
+  year?: number;
+  mediaType: MediaType;
+  eventCategory: MediaEventCategory;
+  episodes: EpisodeRef[];
+  imageUrl?: string;
+  url?: string;
+}
+
 interface PendingBatch {
   webhookUrl: string;
   username?: string;
   avatarUrl?: string;
   contents: string[];
-  embeds: DiscordEmbed[];
+  mediaGroups: Map<string, MediaEmbedGroup>;
+  passthroughEmbeds: DiscordEmbed[];
   mentionsToInject: Set<string>;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -62,6 +76,64 @@ function buildContentWithMentions(
     return combined;
   }
   return `${combined.slice(0, DISCORD_MAX_CONTENT_LENGTH - 1)}…`;
+}
+
+function addUpdateToMediaGroups(
+  mediaGroups: Map<string, MediaEmbedGroup>,
+  passthroughEmbeds: DiscordEmbed[],
+  update: ParsedMediaUpdate,
+): void {
+  if (update.eventCategory === 'other' || !update.title) {
+    if (update.discordPayload.embeds?.length) {
+      passthroughEmbeds.push(...update.discordPayload.embeds);
+    }
+    return;
+  }
+
+  const groupKey = `${update.mediaKey ?? update.title.toLowerCase()}::${update.eventCategory}`;
+  let group = mediaGroups.get(groupKey);
+  if (!group) {
+    group = {
+      title: update.title,
+      year: update.year,
+      mediaType: update.mediaType,
+      eventCategory: update.eventCategory,
+      episodes: [],
+      imageUrl: update.imageUrl,
+      url: update.url,
+    };
+    mediaGroups.set(groupKey, group);
+  } else {
+    if (!group.year && update.year) group.year = update.year;
+    if (!group.imageUrl && update.imageUrl) group.imageUrl = update.imageUrl;
+    if (!group.url && update.url) group.url = update.url;
+  }
+
+  if (update.episodes.length > 0) {
+    group.episodes.push(...update.episodes);
+  }
+}
+
+function materializeEmbeds(
+  mediaGroups: Map<string, MediaEmbedGroup>,
+  passthroughEmbeds: DiscordEmbed[],
+): DiscordEmbed[] {
+  const embeds: DiscordEmbed[] = [];
+  for (const group of mediaGroups.values()) {
+    embeds.push(
+      buildSeerrStyleEmbed({
+        title: group.title,
+        year: group.year,
+        mediaType: group.mediaType,
+        eventCategory: group.eventCategory,
+        episodes: group.episodes,
+        imageUrl: group.imageUrl,
+        url: group.url,
+      }),
+    );
+  }
+  embeds.push(...passthroughEmbeds);
+  return embeds;
 }
 
 export class WebhookAggregator {
@@ -122,11 +194,15 @@ export class WebhookAggregator {
     }
 
     if (this.aggregationWindowMs <= 0) {
+      const mediaGroups = new Map<string, MediaEmbedGroup>();
+      const passthroughEmbeds: DiscordEmbed[] = [];
+      addUpdateToMediaGroups(mediaGroups, passthroughEmbeds, update);
+
       const payload = this.buildFinalPayload(
         update.discordPayload.username,
         update.discordPayload.avatar_url,
         update.discordPayload.content ? [update.discordPayload.content] : [],
-        update.discordPayload.embeds ?? [],
+        materializeEmbeds(mediaGroups, passthroughEmbeds),
         pingedUsers,
       );
       await this.discord.send(webhookUrl, payload);
@@ -152,7 +228,8 @@ export class WebhookAggregator {
         username: update.discordPayload.username,
         avatarUrl: update.discordPayload.avatar_url,
         contents: [],
-        embeds: [],
+        mediaGroups: new Map(),
+        passthroughEmbeds: [],
         mentionsToInject: new Set(),
         timer,
       };
@@ -162,9 +239,7 @@ export class WebhookAggregator {
     if (update.discordPayload.content) {
       batch.contents.push(update.discordPayload.content);
     }
-    if (update.discordPayload.embeds?.length) {
-      batch.embeds.push(...update.discordPayload.embeds);
-    }
+    addUpdateToMediaGroups(batch.mediaGroups, batch.passthroughEmbeds, update);
     if (!batch.avatarUrl && update.discordPayload.avatar_url) {
       batch.avatarUrl = update.discordPayload.avatar_url;
     }
@@ -210,11 +285,12 @@ export class WebhookAggregator {
     clearTimeout(batch.timer);
     this.pendingBatches.delete(batchKey);
 
+    const embeds = materializeEmbeds(batch.mediaGroups, batch.passthroughEmbeds);
     const payload = this.buildFinalPayload(
       batch.username,
       batch.avatarUrl,
       batch.contents,
-      batch.embeds,
+      embeds,
       [...batch.mentionsToInject],
     );
 
@@ -223,7 +299,7 @@ export class WebhookAggregator {
     } catch (err) {
       this.logger?.error('Failed to forward aggregated Discord webhook', {
         error: err instanceof Error ? err.message : String(err),
-        embedCount: batch.embeds.length,
+        embedCount: embeds.length,
       });
     }
   }

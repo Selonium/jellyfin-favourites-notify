@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { parseIncomingWebhook } from '../src/services/webhookParser.js';
+import {
+  extractEpisodesFromText,
+  formatEpisodeRange,
+  parseIncomingWebhook,
+} from '../src/services/webhookParser.js';
 
 describe('parseIncomingWebhook', () => {
   it('parses a Sonarr Discord embed webhook with TVDB/IMDb links', () => {
@@ -125,11 +129,14 @@ describe('parseIncomingWebhook', () => {
       imdb: 'tt9253284',
     });
     expect(parsed.discordPayload.username).toBe('Sonarr');
-    expect(parsed.discordPayload.embeds?.[0]?.title).toBe('Andor - S02E04 - Ever Been to Ghorman?');
-    expect(parsed.discordPayload.embeds?.[0]?.description).toBe('Episode Upgraded');
+    expect(parsed.discordPayload.embeds?.[0]?.title).toBe('Andor (2022)');
+    expect(parsed.discordPayload.embeds?.[0]?.fields).toEqual([
+      { name: 'Modification', value: 'Upgraded', inline: true },
+      { name: 'Episode', value: 'S02E04', inline: true },
+    ]);
   });
 
-  it('transforms raw Radarr MovieFileDelete webhook into Discord embed payload', () => {
+  it('transforms raw Radarr MovieFileDelete webhook into simplified Discord embed payload', () => {
     const raw = {
       eventType: 'MovieFileDelete',
       deleteReason: 'manual',
@@ -138,6 +145,7 @@ describe('parseIncomingWebhook', () => {
         year: 2024,
         tmdbId: 693134,
         imdbId: 'tt15239678',
+        images: [{ coverType: 'poster', remoteUrl: 'https://image.tmdb.org/poster.jpg' }],
       },
     };
 
@@ -145,7 +153,33 @@ describe('parseIncomingWebhook', () => {
     expect(parsed.source).toBe('radarr');
     expect(parsed.mediaType).toBe('movie');
     expect(parsed.eventCategory).toBe('deleted');
+    expect(parsed.imageUrl).toBe('https://image.tmdb.org/poster.jpg');
     expect(parsed.discordPayload.embeds?.[0]?.title).toBe('Dune: Part Two (2024)');
-    expect(parsed.discordPayload.embeds?.[0]?.description).toBe('Movie Deleted');
+    expect(parsed.discordPayload.embeds?.[0]?.fields).toEqual([
+      { name: 'Modification', value: 'Deleted', inline: true },
+    ]);
+    expect(parsed.discordPayload.embeds?.[0]?.thumbnail).toEqual({
+      url: 'https://image.tmdb.org/poster.jpg',
+    });
+    expect(parsed.discordPayload.embeds?.[0]?.image).toBeUndefined();
+  });
+
+  it('extracts episode refs and formats contiguous episode ranges cleanly', () => {
+    expect(extractEpisodesFromText('Breaking Bad - 1x01-03 - Multi')).toEqual([
+      { season: 1, episode: 1 },
+      { season: 1, episode: 2 },
+      { season: 1, episode: 3 },
+    ]);
+
+    expect(
+      formatEpisodeRange([
+        { season: 1, episode: 3 },
+        { season: 1, episode: 1 },
+        { season: 1, episode: 2 },
+        { season: 1, episode: 5 },
+        { season: 2, episode: 1 },
+        { season: 2, episode: 2 },
+      ]),
+    ).toBe('S01E01–S01E03, S01E05, S02E01–S02E02');
   });
 });

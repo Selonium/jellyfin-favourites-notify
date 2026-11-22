@@ -21,7 +21,7 @@ function createStubStore(mapping: Record<string, string[]>): FavouritesStore {
 }
 
 describe('WebhookAggregator', () => {
-  it('aggregates a flurry of episode imports, injects pings once, and debounces subsequent flurries for 1 hour', async () => {
+  it('aggregates a flurry of episode imports into one simplified embed with episode range and one image, and debounces repeat pings for 1 hour', async () => {
     const sentPayloads: DiscordWebhookPayload[] = [];
     const mockFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       sentPayloads.push(JSON.parse(String(init?.body)) as DiscordWebhookPayload);
@@ -43,7 +43,7 @@ describe('WebhookAggregator', () => {
       pingOnEvents: new Set(['added', 'upgraded', 'deleted']),
     });
 
-    // Flurry of 3 episodes imported rapidly
+    // Flurry of 3 episodes imported rapidly, each with both thumbnail and image
     for (let ep = 1; ep <= 3; ep++) {
       const parsed = parseIncomingWebhook({
         username: 'Sonarr',
@@ -51,7 +51,10 @@ describe('WebhookAggregator', () => {
           {
             title: `Breaking Bad - 1x0${ep} - Episode ${ep}`,
             description: 'Episode Imported',
+            thumbnail: { url: 'https://artworks.thetvdb.com/poster.jpg' },
+            image: { url: 'https://artworks.thetvdb.com/banner.jpg' },
             fields: [
+              { name: 'Quality', value: 'Bluray-1080p' },
               {
                 name: 'Links',
                 value: '[TheTVDB](https://thetvdb.com/dereferer/series/81189)',
@@ -65,9 +68,18 @@ describe('WebhookAggregator', () => {
 
     await aggregator.flushAll();
 
-    // All 3 episodes combined into 1 Discord message with deduplicated pings
+    // All 3 episodes collapse into 1 clean Seerr-style embed with 1 image and deduplicated pings
     expect(sentPayloads).toHaveLength(1);
-    expect(sentPayloads[0].embeds).toHaveLength(3);
+    expect(sentPayloads[0].embeds).toHaveLength(1);
+    expect(sentPayloads[0].embeds?.[0]).toMatchObject({
+      title: 'Breaking Bad',
+      fields: [
+        { name: 'Modification', value: 'Added', inline: true },
+        { name: 'Episodes', value: 'S01E01–S01E03', inline: true },
+      ],
+      thumbnail: { url: 'https://artworks.thetvdb.com/poster.jpg' },
+    });
+    expect(sentPayloads[0].embeds?.[0]?.image).toBeUndefined();
     expect(sentPayloads[0].content).toBe('<@111111> <@222222>');
     expect(sentPayloads[0].allowed_mentions).toEqual({ users: ['111111', '222222'] });
 
@@ -95,6 +107,10 @@ describe('WebhookAggregator', () => {
 
     expect(sentPayloads).toHaveLength(2);
     expect(sentPayloads[1].embeds).toHaveLength(1);
+    expect(sentPayloads[1].embeds?.[0]?.fields).toEqual([
+      { name: 'Modification', value: 'Added', inline: true },
+      { name: 'Episode', value: 'S01E04', inline: true },
+    ]);
     expect(sentPayloads[1].content).toBeUndefined();
     expect(sentPayloads[1].allowed_mentions).toBeUndefined();
 
@@ -122,7 +138,7 @@ describe('WebhookAggregator', () => {
     expect(sentPayloads[2].content).toBe('<@111111> <@222222>');
   });
 
-  it('chunks more than 10 aggregated embeds across multiple Discord webhook posts', async () => {
+  it('chunks more than 10 distinct show embeds across multiple Discord webhook posts', async () => {
     const sentPayloads: DiscordWebhookPayload[] = [];
     const mockFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       sentPayloads.push(JSON.parse(String(init?.body)) as DiscordWebhookPayload);
@@ -137,10 +153,10 @@ describe('WebhookAggregator', () => {
       pingOnEvents: new Set(['added', 'upgraded', 'deleted']),
     });
 
-    for (let ep = 1; ep <= 12; ep++) {
+    for (let showNum = 1; showNum <= 12; showNum++) {
       const parsed = parseIncomingWebhook({
         username: 'Sonarr',
-        embeds: [{ title: `New Show - 1x${String(ep).padStart(2, '0')}` }],
+        embeds: [{ title: `Show ${showNum} - 1x01 - Pilot` }],
       });
       await aggregator.handle('https://discord.com/api/webhooks/1/tok', parsed);
     }

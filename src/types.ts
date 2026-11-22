@@ -109,12 +109,21 @@ export interface DiscordWebhookPayload {
   };
 }
 
+export interface EpisodeRef {
+  season: number;
+  episode: number;
+  title?: string;
+}
+
 export interface ParsedMediaUpdate {
   source: ArrSource;
   mediaType: MediaType;
   eventCategory: MediaEventCategory;
   title?: string;
   year?: number;
+  episodes: EpisodeRef[];
+  imageUrl?: string;
+  url?: string;
   providerIds: ProviderIds;
   /** Stable key used for per-media debounce tracking */
   mediaKey?: string;

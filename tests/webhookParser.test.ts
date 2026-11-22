@@ -94,6 +94,17 @@ describe('parseIncomingWebhook', () => {
       ],
     });
     expect(testMsg.eventCategory).toBe('other');
+
+    const appUpdated = parseIncomingWebhook({
+      username: 'Sonarr',
+      embeds: [
+        {
+          title: 'Application Updated',
+          description: 'Sonarr updated from 4.0.1 to 4.0.2',
+        },
+      ],
+    });
+    expect(appUpdated.eventCategory).toBe('other');
   });
 
   it('transforms raw Sonarr Download/Upgrade webhook into Discord embed payload', () => {

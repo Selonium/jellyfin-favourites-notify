@@ -144,7 +144,7 @@ function classifyDiscordEvent(payload: DiscordWebhookPayload): MediaEventCategor
     .toLowerCase();
 
   if (
-    /\b(test message|health issue|health restored|application update|manual interaction)\b/.test(
+    /\b(test message|health issue|health check|health restored|application updated?|manual interaction|sonarr updated|radarr updated)\b/.test(
       headerText,
     )
   ) {
